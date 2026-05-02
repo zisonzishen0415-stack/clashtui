@@ -44,7 +44,7 @@ func SetSystemProxy(port int) {
 	createProxyScript(port, true)
 }
 
-// UnsetSystemProxy clears system proxy and restores DNS
+// UnsetSystemProxy clears system proxy
 func UnsetSystemProxy() {
 	// Clear GNOME
 	if hasGsettings() {
@@ -60,9 +60,6 @@ func UnsetSystemProxy() {
 
 	// Remove Chrome proxy desktop file
 	removeChromeProxyDesktop()
-
-	// Restore DNS - critical for recovery after fake-ip mode
-	restoreDNS()
 
 	// Create shell script to clear env vars
 	createProxyScript(0, false)
@@ -162,18 +159,4 @@ func removeChromeProxyDesktop() {
 	home, _ := os.UserHomeDir()
 	desktopPath := filepath.Join(home, ".local/share/applications", "chrome-proxy.desktop")
 	os.Remove(desktopPath)
-}
-
-// restoreDNS restores DNS settings after proxy shutdown
-// Critical for systems where mihomo fake-ip mode modified DNS
-func restoreDNS() {
-	// Flush DNS caches
-	exec.Command("resolvectl", "flush-caches").Run()
-	exec.Command("systemd-resolve", "--flush-caches").Run()
-
-	// Restart systemd-resolved if available (restores default DNS)
-	exec.Command("systemctl", "restart", "systemd-resolved").Run()
-
-	// For systems using NetworkManager, trigger DNS reload
-	exec.Command("nmcli", "general", "reload", "dns").Run()
 }

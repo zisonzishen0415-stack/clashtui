@@ -189,11 +189,15 @@ func restoreNetwork() {
 
 	fmt.Println("✓ Network restored!")
 	fmt.Println("✓ Proxy settings cleared")
-	fmt.Println("✓ DNS reset")
 	fmt.Println("")
-	fmt.Println("If network still broken, run:")
-	fmt.Println("  sudo systemctl restart NetworkManager")
-	fmt.Println("  OR: sudo systemctl restart systemd-resolved")
+	fmt.Println("If DNS still broken, check symlink:")
+	fmt.Println("  ls -la /etc/resolv.conf")
+	fmt.Println("  Should point to: /run/systemd/resolve/resolv.conf")
+	fmt.Println("  If broken, fix with:")
+	fmt.Println("    sudo ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf")
+	fmt.Println("")
+	fmt.Println("Or restart DNS service:")
+	fmt.Println("  sudo systemctl restart systemd-resolved")
 }
 
 func toggleProxy() {

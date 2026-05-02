@@ -285,7 +285,8 @@ func DownloadSubscription(subURL string, proxyPort, apiPort int) ([]byte, Subscr
 	var configData []byte
 
 	if strings.HasPrefix(s, "proxies:") || strings.HasPrefix(s, "mixed-port:") {
-		configData = data
+		// Subscription returned full config - replace DNS section with our safe settings
+		configData = replaceDNSInConfig(data, proxyPort, apiPort)
 	} else {
 		nodes := parseSubscriptionContent(s)
 		if len(nodes) == 0 {
@@ -339,6 +340,105 @@ func parseSubscriptionContent(content string) []string {
 	}
 
 	return nodes
+}
+
+// replaceDNSInConfig replaces DNS section in clash config with safe redir-host mode
+// This prevents fake-ip DNS hijacking issues that break network after shutdown
+func replaceDNSInConfig(configData []byte, proxyPort, apiPort int) []byte {
+	content := string(configData)
+
+	// Safe DNS config using redir-host mode (not fake-ip)
+	safeDNS := `dns:
+  enable: true
+  enhanced-mode: redir-host
+  fake-ip-range: 198.18.0.1/16
+  fake-ip-filter:
+    - '*.lan'
+    - localhost.ptlogin.microsoft.com
+    - '+.srvrecord'
+    - '+.msftncsi.com'
+    - '+.msftconnecttest.com'
+  default-nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+  nameserver:
+    - https://dns.alidns.com/dns-query
+    - https://doh.pub/dns-query
+  fallback:
+    - https://1.1.1.1/dns-query
+    - https://dns.google/dns-query
+  fallback-filter:
+    geoip: true
+    geoip-code: CN`
+
+	// Find and replace DNS section
+	// DNS section starts with "dns:" and ends at next top-level key (line not starting with space)
+	lines := strings.Split(content, "\n")
+	var result []string
+	skipDNS := false
+	dnsReplaced := false
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Detect DNS section start
+		if trimmed == "dns:" || strings.HasPrefix(trimmed, "dns:") {
+			skipDNS = true
+			// Insert our safe DNS config
+			result = append(result, safeDNS)
+			dnsReplaced = true
+			continue
+		}
+
+		// Skip lines in DNS section (they start with space or are continuation)
+		if skipDNS {
+			// Check if we've reached a new top-level section
+			// Top-level keys don't start with space and aren't empty
+			if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") && trimmed != "" {
+				skipDNS = false
+				result = append(result, line)
+			}
+			// Otherwise skip this line (it's part of old DNS config)
+			continue
+		}
+
+		result = append(result, line)
+
+		// Also update mixed-port and external-controller if present
+		if strings.HasPrefix(trimmed, "mixed-port:") && i+1 < len(lines) {
+			// Keep original mixed-port if it exists
+		}
+	}
+
+	// If no DNS section found, add it after mixed-port
+	if !dnsReplaced {
+		// Find where to insert DNS (after mixed-port/allow-lan/basic settings)
+		insertIdx := 0
+		for i := range result {
+			trimmed := strings.TrimSpace(result[i])
+			if strings.HasPrefix(trimmed, "mixed-port:") ||
+				strings.HasPrefix(trimmed, "allow-lan:") ||
+				strings.HasPrefix(trimmed, "mode:") ||
+				strings.HasPrefix(trimmed, "log-level:") {
+				insertIdx = i + 1
+			}
+			// Stop at first non-basic setting
+			if strings.HasPrefix(trimmed, "proxies:") ||
+				strings.HasPrefix(trimmed, "proxy-groups:") ||
+				strings.HasPrefix(trimmed, "rules:") {
+				break
+			}
+		}
+		if insertIdx > 0 {
+			// Insert DNS config
+			newResult := result[:insertIdx]
+			newResult = append(newResult, safeDNS)
+			newResult = append(newResult, result[insertIdx:]...)
+			result = newResult
+		}
+	}
+
+	return []byte(strings.Join(result, "\n"))
 }
 
 func isValidNodeLink(link string) bool {

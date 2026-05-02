@@ -189,7 +189,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.currentAction = ""
 			m.addLog("✓ Core stopped, proxy cleared")
 			m.addLog("Run: source ~/.config/clashtui/proxy.sh")
-			m.addLog("Note: DNS may break with fake-ip mode, press 'r' to restart")
 			return m, nil
 		case "s":
 			m.startAction("Adding subscription")
