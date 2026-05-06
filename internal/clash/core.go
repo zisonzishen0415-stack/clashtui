@@ -15,10 +15,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"clashtui/internal/config"
 	"clashtui/internal/geo"
+	"clashtui/internal/validation"
 )
 
 const coreVersion = "v1.18.10"
@@ -118,7 +120,37 @@ type Core struct {
 
 const clashPidFile = "clash.pid"
 
-func NewCore() *Core { return &Core{} }
+func NewCore() *Core {
+	c := &Core{}
+	c.cleanupStaleProcess()
+	return c
+}
+
+func (c *Core) cleanupStaleProcess() {
+	pid, err := readClashPid()
+	if err != nil || pid == 0 {
+		return
+	}
+
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		clearClashPid()
+		return
+	}
+
+	running := false
+	if err := process.Signal(syscall.Signal(0)); err == nil {
+		running = true
+	}
+
+	if running {
+		process.Kill()
+		process.Wait()
+		clearClashPid()
+	} else {
+		clearClashPid()
+	}
+}
 
 func getClashPidFilePath() string {
 	return filepath.Join(config.GetBaseDir(), clashPidFile)
@@ -161,9 +193,18 @@ func (c *Core) Install() error {
 }
 
 func (c *Core) NeedsCapability() bool {
+	if _, err := exec.LookPath("getcap"); err != nil {
+		return false
+	}
+
 	cmd := exec.Command("getcap", config.RealCoreBinaryPath())
 	output, _ := cmd.Output()
 	return !strings.Contains(string(output), "cap_net_admin")
+}
+
+func (c *Core) HasGetcap() bool {
+	_, err := exec.LookPath("getcap")
+	return err == nil
 }
 
 func (c *Core) SetCapability() error {
@@ -192,6 +233,15 @@ func (c *Core) Start() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	configData, err := config.LoadConfigNoValidation()
+	if err != nil {
+		return fmt.Errorf("no config file, press 's' to add subscription")
+	}
+
+	if err := validation.ValidateConfig(configData); err != nil {
+		return fmt.Errorf("config invalid: %w", err)
+	}
+
 	c.stopInternal()
 
 	cmd := exec.Command(config.CoreBinaryPath(), "-d", config.GetBaseDir())
@@ -211,6 +261,15 @@ func (c *Core) Start() error {
 func (c *Core) StartAndCheck() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	configData, err := config.LoadConfigNoValidation()
+	if err != nil {
+		return fmt.Errorf("no config file, press 's' to add subscription")
+	}
+
+	if err := validation.ValidateConfig(configData); err != nil {
+		return fmt.Errorf("config invalid: %w", err)
+	}
 
 	c.stopInternal()
 
@@ -358,7 +417,6 @@ func DownloadSubscription(subURL string, proxyPort, apiPort int, tunMode bool) (
 	var configData []byte
 
 	if strings.HasPrefix(s, "proxies:") || strings.HasPrefix(s, "mixed-port:") {
-		// Subscription returned full config - replace DNS section with our safe settings
 		configData = replaceDNSInConfig(data, proxyPort, apiPort)
 	} else {
 		nodes := parseSubscriptionContent(s)
@@ -366,6 +424,10 @@ func DownloadSubscription(subURL string, proxyPort, apiPort int, tunMode bool) (
 			return nil, info, fmt.Errorf("no valid nodes found in subscription")
 		}
 		configData = []byte(buildConfig(nodes, proxyPort, apiPort, tunMode))
+	}
+
+	if err := validation.ValidateConfig(configData); err != nil {
+		return nil, info, fmt.Errorf("config validation failed: %w", err)
 	}
 
 	if err := config.SaveConfig(configData); err != nil { return nil, SubscriptionInfo{}, err }

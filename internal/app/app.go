@@ -12,9 +12,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"clashtui/internal/backup"
 	"clashtui/internal/clash"
 	"clashtui/internal/clipboard"
 	"clashtui/internal/config"
+	"clashtui/internal/health"
 	"clashtui/internal/proxy"
 	"clashtui/internal/settings"
 	"clashtui/internal/tui"
@@ -40,6 +42,10 @@ type Model struct {
 	height        int
 }
 
+type MsgHealthCheckDone struct {
+	Results []health.HealthCheckResult
+}
+
 func New() Model {
 	s := settings.Load()
 	client := clash.NewClient(s.APIPort)
@@ -50,8 +56,6 @@ func New() Model {
 
 	running := client.IsConnected()
 
-	// Critical: Clear stale proxy settings from previous session if core not running
-	// gsettings persist across reboot, but mihomo doesn't auto-start
 	if !running && s.SystemProxy {
 		proxy.UnsetSystemProxy()
 	}
@@ -72,7 +76,13 @@ func New() Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return m.nodes.Init()
+	return tea.Batch(
+		m.nodes.Init(),
+		func() tea.Msg {
+			results := health.RunHealthChecks(m.settings)
+			return MsgHealthCheckDone{Results: results}
+		},
+	)
 }
 
 func (m *Model) addLog(line string) {
@@ -97,6 +107,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		return m, nil
+	case MsgHealthCheckDone:
+		for _, result := range msg.Results {
+			if result.ActionTaken != "" {
+				m.addLog("⚠ Found " + result.Issue)
+				m.addLog("✓ " + result.ActionTaken)
+			}
+		}
 		return m, nil
 	case tui.MsgProxiesLoaded:
 		cmd := m.nodes.Update(msg)
@@ -384,7 +402,10 @@ WantedBy=default.target`
 
 func (m Model) handleTUNModeToggle() (tea.Model, tea.Cmd) {
 	if !m.settings.TUNMode {
-		if m.core.NeedsCapability() {
+		if !m.core.HasGetcap() {
+			m.addLog("⚠ getcap command not found, skipping capability check")
+			m.addLog("  If TUN fails, run: sudo setcap cap_net_admin+ep " + config.RealCoreBinaryPath())
+		} else if m.core.NeedsCapability() {
 			m.addLog("⚠ TUN needs sudo setcap. Run:")
 			m.addLog("  sudo setcap cap_net_admin+ep " + config.RealCoreBinaryPath())
 			return m, nil
@@ -398,15 +419,32 @@ func (m Model) handleTUNModeToggle() (tea.Model, tea.Cmd) {
 		
 		if m.running {
 			m.core.Stop()
-			data, err := config.LoadConfig()
+			data, err := config.LoadConfigNoValidation()
 			if err != nil {
 				m.addLog("⚠ Config load failed")
+				m.addLog("  Suggestion: Delete subscription and re-add")
 				return m, nil
 			}
 			newData := clash.ProcessConfigForTUN(data, true)
 			config.SaveConfig(newData)
+			
 			if err := m.core.StartAndCheck(); err != nil {
-				m.addLog("⚠ Core restart failed")
+				m.addLog("⚠ TUN core start failed: " + err.Error())
+				m.addLog("  Falling back to system-proxy mode...")
+				
+				newData = clash.ProcessConfigForTUN(newData, false)
+				config.SaveConfig(newData)
+				m.settings.TUNMode = false
+				m.settings.SystemProxy = true
+				settings.Save(m.settings)
+				proxy.SetSystemProxy(m.settings.ProxyPort)
+				
+				if startErr := m.core.StartAndCheck(); startErr != nil {
+					m.addLog("⚠ Fallback also failed: " + startErr.Error())
+					m.addLog("  Recovery: Run 'clashtui --restore-network'")
+				} else {
+					m.addLog("✓ Fallback to system-proxy succeeded")
+				}
 				return m, nil
 			}
 			m.addLog("✓ All traffic now through proxy")
@@ -884,9 +922,20 @@ func (m Model) importFromClipboard() tea.Cmd {
 func (m Model) downloadSub(name, url string) tea.Cmd {
 	return func() tea.Msg {
 		m.addLog("Downloading: " + url)
+		
+		backupPath, err := backup.CreateBackup(config.GetConfigPath())
+		if err != nil && backupPath != "" {
+			m.addLog("→ Created backup at: " + backupPath)
+		}
+		
 		_, info, err := clash.DownloadSubscription(url, m.settings.ProxyPort, m.settings.APIPort, m.settings.TUNMode)
 		if err != nil {
 			m.addLog("⚠ Download error: " + err.Error())
+			if backupPath != "" {
+				m.addLog("→ Rolling back config...")
+				backup.RestoreBackup(config.GetConfigPath(), backupPath)
+				m.addLog("✓ Config restored from backup")
+			}
 			return tui.MsgLogLine("⚠ Download error: " + err.Error())
 		}
 
@@ -904,6 +953,12 @@ func (m Model) downloadSub(name, url string) tea.Cmd {
 
 		m.core.Stop()
 		if err := m.core.StartAndCheck(); err != nil {
+			m.addLog("⚠ Core start error: " + err.Error())
+			if backupPath != "" {
+				m.addLog("→ Rolling back config...")
+				backup.RestoreBackup(config.GetConfigPath(), backupPath)
+				m.addLog("✓ Config restored from backup")
+			}
 			return tui.MsgLogLine("⚠ Core start error: " + err.Error())
 		}
 

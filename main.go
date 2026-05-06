@@ -69,7 +69,6 @@ func getProxyPort() int {
 }
 
 func printStatus() {
-	// Status is read-only, no need to check for running instance
 	client := clash.NewClient(getAPIPort())
 	connected := client.IsConnected()
 
@@ -93,7 +92,8 @@ func printStatus() {
 func runDaemon() {
 	acquired, err := singleinstance.Acquire()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(os.Stderr, "Error acquiring lock:", err)
+		fmt.Fprintln(os.Stderr, "  Suggestion: Check /tmp/clashtui.pid or run --restore-network")
 		os.Exit(1)
 	}
 	if !acquired {
@@ -109,16 +109,25 @@ func runDaemon() {
 
 	if config.Exists() {
 		if !core.IsInstalled() {
-			core.Install()
+			if err := core.Install(); err != nil {
+				fmt.Fprintln(os.Stderr, "Error installing core:", err)
+				fmt.Fprintln(os.Stderr, "  Suggestion: Check network and try again")
+				os.Exit(1)
+			}
 			core.DownloadGeoData()
 		}
-		core.Start()
+		
+		if err := core.Start(); err != nil {
+			fmt.Fprintln(os.Stderr, "Error starting core:", err)
+			fmt.Fprintln(os.Stderr, "  Suggestion: Run 'clashtui --restore-network' to fix network")
+			os.Exit(1)
+		}
+		
 		if s.SystemProxy {
 			proxy.SetSystemProxy(s.ProxyPort)
 		}
 	}
 
-	// Handle socket commands in background
 	go singleinstance.HandleSocketCommands(func(cmd string) string {
 		return handleCommand(cmd, core)
 	})
@@ -131,7 +140,8 @@ func runDaemon() {
 func runTUI() {
 	acquired, err := singleinstance.Acquire()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		fmt.Fprintln(os.Stderr, "  Suggestion: Remove /tmp/clashtui.pid and try again")
 		os.Exit(1)
 	}
 	if !acquired {
@@ -143,12 +153,10 @@ func runTUI() {
 	client := clash.NewClient(getAPIPort())
 	core := clash.NewCore()
 
-	// Clear stale state if mihomo not running
 	if !client.IsConnected() {
 		core.Stop()
 	}
 
-	// Handle socket commands in background (TUI also handles IPC)
 	go singleinstance.HandleSocketCommands(func(cmd string) string {
 		return handleCommand(cmd, core)
 	})
@@ -159,10 +167,10 @@ func runTUI() {
 	)
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
+		fmt.Fprintln(os.Stderr, "  Suggestion: Check terminal compatibility")
 		os.Exit(1)
 	}
 
-	// Exit message
 	client = clash.NewClient(getAPIPort())
 	if client.IsConnected() {
 		fmt.Println("\n  ✓ Exited - core running")
@@ -223,10 +231,7 @@ func handleCommand(cmd string, core *clash.Core) string {
 	}
 }
 
-// stopAll stops mihomo and clears proxy
-// If TUI/daemon is running, delegate via socket; otherwise operate directly
 func stopAll() {
-	// Check if TUI/daemon is running via socket
 	if singleinstance.IsRunning() {
 		resp, err := singleinstance.SendCommand("stop")
 		if err == nil {
@@ -234,7 +239,6 @@ func stopAll() {
 			fmt.Println("Terminal: source ~/.config/clashtui/proxy.sh")
 			return
 		}
-		// Socket failed but instance might be running - send signal
 		pid, err := singleinstance.ReadPID()
 		if err == nil && pid > 0 {
 			process, _ := os.FindProcess(pid)
@@ -243,16 +247,13 @@ func stopAll() {
 		}
 	}
 
-	// No running instance - operate directly
 	core := clash.NewCore()
 	core.Stop()
 	proxy.UnsetSystemProxy()
-	fmt.Println("Stopped, proxy cleared")
-	fmt.Println("Terminal: source ~/.config/clashtui/proxy.sh")
+	fmt.Println("✓ Stopped, proxy cleared")
+	fmt.Println("  Terminal: source ~/.config/clashtui/proxy.sh")
 }
 
-// restoreNetwork forcefully clears all proxy settings
-// This is an emergency command, always operate directly (even if TUI running)
 func restoreNetwork() {
 	pid, err := singleinstance.ReadPID()
 	if err == nil && pid > 0 {
@@ -272,6 +273,9 @@ func restoreNetwork() {
 	fmt.Println("")
 	fmt.Println("If DNS still broken:")
 	fmt.Println("  sudo systemctl restart systemd-resolved")
+	fmt.Println("")
+	fmt.Println("Alternative recovery:")
+	fmt.Println("  Reboot system if network issues persist")
 }
 
 // toggleProxy toggles proxy on/off

@@ -1,8 +1,11 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+
+	"clashtui/internal/validation"
 )
 
 const ConfigDir = ".config/clashtui"
@@ -36,6 +39,19 @@ func SaveConfig(content []byte) error {
 }
 
 func LoadConfig() ([]byte, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := validation.ValidateConfig(data); err != nil {
+		return nil, fmt.Errorf("config validation failed: %w", err)
+	}
+
+	return data, nil
+}
+
+func LoadConfigNoValidation() ([]byte, error) {
 	return os.ReadFile(configPath)
 }
 
@@ -87,4 +103,8 @@ func GetBaseDir() string {
 
 func GetOldSubscriptionPath() string {
 	return subscriptionPath
+}
+
+func GetConfigPath() string {
+	return configPath
 }
