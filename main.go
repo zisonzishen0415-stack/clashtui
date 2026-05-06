@@ -43,6 +43,9 @@ func main() {
 		case "--env":
 			printEnv()
 			return
+		case "--test-download":
+			testDownload()
+			return
 		}
 	}
 
@@ -251,8 +254,6 @@ func stopAll() {
 // restoreNetwork forcefully clears all proxy settings
 // This is an emergency command, always operate directly (even if TUI running)
 func restoreNetwork() {
-	// Emergency: force clear, don't wait for socket response
-	// Kill TUI/daemon first if running
 	pid, err := singleinstance.ReadPID()
 	if err == nil && pid > 0 {
 		process, _ := os.FindProcess(pid)
@@ -260,23 +261,16 @@ func restoreNetwork() {
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	// Kill any lingering mihomo process
 	core := clash.NewCore()
 	core.Stop()
 
-	// Clear all proxy settings
 	proxy.UnsetSystemProxy()
 
 	fmt.Println("✓ Network restored!")
 	fmt.Println("✓ Proxy settings cleared")
+	fmt.Println("✓ TUN mode stopped")
 	fmt.Println("")
-	fmt.Println("If DNS still broken, check symlink:")
-	fmt.Println("  ls -la /etc/resolv.conf")
-	fmt.Println("  Should point to: /run/systemd/resolve/resolv.conf")
-	fmt.Println("  If broken, fix with:")
-	fmt.Println("    sudo ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf")
-	fmt.Println("")
-	fmt.Println("Or restart DNS service:")
+	fmt.Println("If DNS still broken:")
 	fmt.Println("  sudo systemctl restart systemd-resolved")
 }
 
@@ -325,6 +319,45 @@ func printEnv() {
 	fmt.Printf("export HTTP_PROXY=http://127.0.0.1:%d\n", port)
 	fmt.Printf("export HTTPS_PROXY=http://127.0.0.1:%d\n", port)
 	fmt.Printf("export ALL_PROXY=socks5://127.0.0.1:%d\n", port)
+}
+
+func testDownload() {
+	s := settings.Load()
+	sub := settings.GetActiveSubscription(s)
+	if sub == nil {
+		fmt.Println("❌ No active subscription")
+		return
+	}
+	fmt.Println("Downloading:", sub.URL)
+	
+	_, info, err := clash.DownloadSubscription(sub.URL, s.ProxyPort, s.APIPort, s.TUNMode)
+	if err != nil {
+		fmt.Println("❌ Error:", err)
+		return
+	}
+	
+	fmt.Println("✅ Download OK")
+	fmt.Println("Traffic:", info.Traffic)
+	fmt.Println("Expiry:", info.Expiry)
+	
+	if config.Exists() {
+		data, _ := config.LoadConfig()
+		fmt.Println("Config size:", len(data), "bytes")
+	}
+	
+	core := clash.NewCore()
+	if err := core.DownloadGeoData(); err != nil {
+		fmt.Println("❌ GeoData error:", err)
+		return
+	}
+	fmt.Println("✅ GeoData extracted")
+	
+	if err := core.StartAndCheck(); err != nil {
+		fmt.Println("❌ Core error:", err)
+		return
+	}
+	fmt.Println("✅ Core running")
+	core.Stop()
 }
 
 func cleanupOnExit() {

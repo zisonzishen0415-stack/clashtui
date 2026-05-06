@@ -10,4 +10,6 @@ clean:
 	rm -f clashtui
 
 install:
-	go install .
+	go build -o clashtui .
+	cp clashtui ~/.local/bin/clashtui
+	@echo "Installed to ~/.local/bin/clashtui"

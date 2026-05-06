@@ -1,0 +1,15 @@
+#!/bin/sh
+# ClashTUI proxyon - enable terminal proxy
+# Usage: eval $(proxyon)
+
+MIHOMO_PORT=7890
+
+if curl -s --connect-timeout 1 http://127.0.0.1:9090/version >/dev/null 2>&1; then
+    echo "export HTTP_PROXY=http://127.0.0.1:$MIHOMO_PORT"
+    echo "export HTTPS_PROXY=http://127.0.0.1:$MIHOMO_PORT"
+    echo "export ALL_PROXY=socks5://127.0.0.1:$MIHOMO_PORT"
+    echo "export NO_PROXY=localhost,127.0.0.1"
+    echo "echo '✓ Proxy enabled: 127.0.0.1:$MIHOMO_PORT'"
+else
+    echo "echo '✗ Proxy disabled: mihomo not running'"
+fi

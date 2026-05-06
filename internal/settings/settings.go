@@ -32,6 +32,7 @@ type Settings struct {
 	ProxyPort      int            `json:"proxy_port"`
 	APIPort        int            `json:"api_port"`
 	SystemProxy    bool           `json:"system_proxy"`
+	TUNMode        bool           `json:"tun_mode"`
 }
 
 var DefaultSettings = Settings{
@@ -45,6 +46,7 @@ var DefaultSettings = Settings{
 	ProxyPort:      7890,
 	APIPort:        9090,
 	SystemProxy:    true,
+	TUNMode:        false,
 }
 
 var settingsPath string

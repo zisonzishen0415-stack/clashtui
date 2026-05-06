@@ -50,6 +50,27 @@ go build -o clashtui .
 cp clashtui "$INSTALL_DIR/"
 chmod +x "$INSTALL_DIR/clashtui"
 
+# 安装 proxy 命令
+cp scripts/proxyon "$INSTALL_DIR/"
+cp scripts/proxyoff "$INSTALL_DIR/"
+chmod +x "$INSTALL_DIR/proxyon"
+chmod +x "$INSTALL_DIR/proxyoff"
+
+# 自动添加 alias 到 shell 配置文件
+ALIAS_MARKER="# ClashTUI proxy aliases"
+
+for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+    if [ -f "$rc" ]; then
+        if ! grep -q "$ALIAS_MARKER" "$rc" 2>/dev/null; then
+            echo "" >> "$rc"
+            echo "$ALIAS_MARKER" >> "$rc"
+            echo "alias proxyon='eval \$(proxyon)'">>"$rc"
+            echo "alias proxyoff='eval \$(proxyoff)'">>"$rc"
+            echo "Added proxy aliases to $rc"
+        fi
+    fi
+done
+
 # 清理
 cd /
 rm -rf "$TEMP_DIR"
@@ -71,6 +92,10 @@ echo "  clashtui          启动 TUI"
 echo "  clashtui --restore-network   恢复网络（当网络中断时使用）"
 echo "  clashtui --stop   停止内核并清除代理"
 echo "  clashtui --toggle 切换代理开关"
+echo ""
+echo "终端代理:"
+echo "  proxyon           启用代理（需重新打开终端或 source ~/.bashrc）"
+echo "  proxyoff          关闭代理"
 echo ""
 echo "首次使用:"
 echo "  1. 运行 clashtui"

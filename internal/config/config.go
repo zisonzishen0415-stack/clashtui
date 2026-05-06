@@ -67,6 +67,15 @@ func CoreBinaryPath() string {
 	return filepath.Join(corePath, "clash")
 }
 
+func RealCoreBinaryPath() string {
+	path := CoreBinaryPath()
+	realPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return path
+	}
+	return realPath
+}
+
 func EnsureCoreDir() error {
 	return os.MkdirAll(corePath, 0755)
 }

@@ -546,8 +546,64 @@ func ParseNodeLinks(content string) []string {
 }
 
 // BuildConfigFromNodes 从节点链接构建配置文件
-func BuildConfigFromNodes(nodes []string, proxyPort, apiPort int) string {
-	return buildConfig(nodes, proxyPort, apiPort)
+func BuildConfigFromNodes(nodes []string, proxyPort, apiPort int, tunMode bool) string {
+	return buildConfig(nodes, proxyPort, apiPort, tunMode)
+}
+
+func ProcessConfigForTUN(configData []byte, enableTUN bool) []byte {
+	content := string(configData)
+
+	tunConfig := `tun:
+  enable: true
+  stack: system
+  auto-route: true
+  auto-detect-interface: true
+  dns-hijack:
+    - any:53`
+
+	lines := strings.Split(content, "\n")
+	var result []string
+	skipTUN := false
+	tunFound := false
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		if trimmed == "tun:" || strings.HasPrefix(trimmed, "tun:") {
+			skipTUN = true
+			tunFound = true
+			if enableTUN {
+				result = append(result, tunConfig)
+			}
+			continue
+		}
+
+		if skipTUN {
+			if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") && trimmed != "" {
+				skipTUN = false
+				result = append(result, line)
+			}
+			continue
+		}
+
+		result = append(result, line)
+	}
+
+	if enableTUN && !tunFound {
+		for i, line := range result {
+			if strings.TrimSpace(line) == "enable: false" && i > 0 {
+				if strings.Contains(result[i-1], "dns:") {
+					newResult := result[:i+1]
+					newResult = append(newResult, tunConfig)
+					newResult = append(newResult, result[i+1:]...)
+					result = newResult
+					break
+				}
+			}
+		}
+	}
+
+	return []byte(strings.Join(result, "\n"))
 }
 
 func buildConfig(nodes []string, proxyPort, apiPort int) string {

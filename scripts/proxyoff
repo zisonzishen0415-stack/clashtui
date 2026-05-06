@@ -1,0 +1,10 @@
+#!/bin/sh
+# ClashTUI proxyoff - disable terminal proxy
+# Usage: eval $(proxyoff)
+
+echo "unset HTTP_PROXY"
+echo "unset HTTPS_PROXY"
+echo "unset ALL_PROXY"
+echo "unset NO_PROXY"
+echo "unset no_proxy"
+echo "echo '✓ Proxy disabled'"
