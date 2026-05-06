@@ -18,11 +18,12 @@ import (
 	"time"
 
 	"clashtui/internal/config"
+	"clashtui/internal/geo"
 )
 
 const coreVersion = "v1.18.10"
-const mmdbDownloadURL = "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.metadb"
-const geositeDownloadURL = "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat"
+const mmdbDownloadURL = "https://gh-proxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb"
+const geositeDownloadURL = "https://gh-proxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"
 
 func getCoreDownloadURL() string {
 	arch := runtime.GOARCH
@@ -175,10 +176,14 @@ func (c *Core) DownloadGeoData() error {
 	geosite := filepath.Join(config.GetBaseDir(), "geosite.dat")
 
 	if _, err := os.Stat(mmdb); os.IsNotExist(err) {
-		if err := downloadFile(mmdbDownloadURL, mmdb); err != nil { return err }
+		if err := geo.ExtractMMDB(mmdb); err != nil {
+			return err
+		}
 	}
 	if _, err := os.Stat(geosite); os.IsNotExist(err) {
-		if err := downloadFile(geositeDownloadURL, geosite); err != nil { return err }
+		if err := geo.ExtractGeosite(geosite); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -187,7 +192,6 @@ func (c *Core) Start() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Kill any existing process first
 	c.stopInternal()
 
 	cmd := exec.Command(config.CoreBinaryPath(), "-d", config.GetBaseDir())
@@ -198,11 +202,63 @@ func (c *Core) Start() error {
 		return err
 	}
 
-	// Save cmd for proper cleanup within same process
 	c.runningCmd = cmd
-
-	// Save PID to file for cross-process tracking
 	saveClashPid(cmd.Process.Pid)
+
+	return nil
+}
+
+func (c *Core) StartAndCheck() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.stopInternal()
+
+	stderrFile := filepath.Join(config.GetBaseDir(), "clash.err")
+	f, err := os.Create(stderrFile)
+	if err != nil {
+		return err
+	}
+
+	cmd := exec.Command(config.CoreBinaryPath(), "-d", config.GetBaseDir())
+	cmd.Stdout = nil
+	cmd.Stderr = f
+
+	if err := cmd.Start(); err != nil {
+		f.Close()
+		return err
+	}
+
+	c.runningCmd = cmd
+	saveClashPid(cmd.Process.Pid)
+
+	time.Sleep(500 * time.Millisecond)
+
+	f.Close()
+
+	if cmd.Process == nil {
+		return fmt.Errorf("process failed to start")
+	}
+
+	if _, err := os.FindProcess(cmd.Process.Pid); err != nil {
+		return fmt.Errorf("cannot find process: %v", err)
+	}
+
+	client := NewClient(9090)
+	if !client.IsConnected() {
+		errData, _ := os.ReadFile(stderrFile)
+		errMsg := string(errData)
+		if strings.Contains(errMsg, "fatal") || strings.Contains(errMsg, "error") {
+			lines := strings.Split(errMsg, "\n")
+			for _, line := range lines {
+				if strings.Contains(line, "fatal") || strings.Contains(line, "Parse config error") {
+					return fmt.Errorf("core startup failed: %s", strings.TrimSpace(line))
+				}
+			}
+			return fmt.Errorf("core startup failed, check %s", stderrFile)
+		}
+		return fmt.Errorf("core not responding at API port 9090")
+	}
 
 	return nil
 }
@@ -358,34 +414,13 @@ func parseSubscriptionContent(content string) []string {
 	return nodes
 }
 
-// replaceDNSInConfig replaces DNS section in clash config with safe redir-host mode
-// This prevents fake-ip DNS hijacking issues that break network after shutdown
+// replaceDNSInConfig replaces DNS section in clash config
 func replaceDNSInConfig(configData []byte, proxyPort, apiPort int) []byte {
 	content := string(configData)
 
-	// Safe DNS config using redir-host mode (not fake-ip)
+	// Simple DNS config - disable to use system DNS
 	safeDNS := `dns:
-  enable: true
-  enhanced-mode: redir-host
-  fake-ip-range: 198.18.0.1/16
-  fake-ip-filter:
-    - '*.lan'
-    - localhost.ptlogin.microsoft.com
-    - '+.srvrecord'
-    - '+.msftncsi.com'
-    - '+.msftconnecttest.com'
-  default-nameserver:
-    - 223.5.5.5
-    - 119.29.29.29
-  nameserver:
-    - https://dns.alidns.com/dns-query
-    - https://doh.pub/dns-query
-  fallback:
-    - https://1.1.1.1/dns-query
-    - https://dns.google/dns-query
-  fallback-filter:
-    geoip: true
-    geoip-code: CN`
+  enable: false`
 
 	// Find and replace DNS section
 	// DNS section starts with "dns:" and ends at next top-level key (line not starting with space)
@@ -466,6 +501,7 @@ func isValidNodeLink(link string) bool {
 		strings.HasPrefix(link, "hysteria2://") ||
 		strings.HasPrefix(link, "hy2://") ||
 		strings.HasPrefix(link, "hysteria://") ||
+		strings.HasPrefix(link, "anytls://") ||
 		strings.HasPrefix(link, "socks5://") ||
 		strings.HasPrefix(link, "socks://") ||
 		strings.HasPrefix(link, "http://") ||
@@ -518,8 +554,8 @@ func buildConfig(nodes []string, proxyPort, apiPort int) string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("mixed-port: %d\nallow-lan: true\nmode: rule\nlog-level: info\nexternal-controller: 127.0.0.1:%d\n", proxyPort, apiPort))
 
-	// DNS configuration - use real IP mode to avoid DNS hijacking issues
-	b.WriteString("\ndns:\n  enable: true\n  enhanced-mode: redir-host\n  fake-ip-range: 198.18.0.1/16\n  fake-ip-filter:\n    - '*.lan'\n    - localhost.ptlogin.microsoft.com\n    - '+.srvrecord'\n    - '+.msftncsi.com'\n    - '+.msftconnecttest.com'\n  default-nameserver:\n    - 223.5.5.5\n    - 119.29.29.29\n  nameserver:\n    - https://dns.alidns.com/dns-query\n    - https://doh.pub/dns-query\n  fallback:\n    - https://1.1.1.1/dns-query\n    - https://dns.google/dns-query\n  fallback-filter:\n    geoip: true\n    geoip-code: CN\n")
+	// DNS configuration - use system DNS for reliability
+	b.WriteString("\ndns:\n  enable: false\n")
 
 	names := []string{}
 	realNodes := []string{}
@@ -560,10 +596,6 @@ func extractNodeName(link string) string {
 		fragment := strings.SplitN(link, "#", 2)[1]
 		decoded, err := url.QueryUnescape(fragment)
 		if err == nil && decoded != "" {
-			if strings.Contains(decoded, "流量") || strings.Contains(decoded, "到期") ||
-				strings.Contains(decoded, "重置") || strings.Contains(decoded, "建议") {
-				return ""
-			}
 			return decoded
 		}
 	}
@@ -591,13 +623,22 @@ func parseNodeConfig(link string) string {
 		host, port := hp[0], hp[1]
 		sni := host
 		skip := false
+		grpc := false
 		if strings.Contains(p[1], "?") {
 			q, _ := url.ParseQuery(strings.SplitN(p[1], "?", 2)[1])
 			if q.Get("sni") != "" { sni = q.Get("sni") }
-			if q.Get("allowInsecure") == "1" { skip = true }
+			if q.Get("peer") != "" { sni = q.Get("peer") }
+			if q.Get("allowInsecure") == "1" || q.Get("insecure") == "1" { skip = true }
+			if q.Get("type") == "grpc" { grpc = true }
 		}
 		r := fmt.Sprintf("  - name: \"%s\"\n    type: trojan\n    server: %s\n    port: %s\n    password: %s\n    sni: %s\n", name, host, port, pass, sni)
 		if skip { r += "    skip-cert-verify: true\n" }
+		if grpc {
+			r += "    network: grpc\n"
+			if serviceName := ""; serviceName != "" {
+				r += fmt.Sprintf("    grpc-opts:\n      grpc-service-name: %s\n", serviceName)
+			}
+		}
 		return r
 	}
 
@@ -623,6 +664,31 @@ func parseNodeConfig(link string) string {
 		return r
 	}
 
+	if strings.HasPrefix(link, "anytls://") {
+		link = strings.TrimPrefix(link, "anytls://")
+		p := strings.SplitN(link, "@", 2)
+		if len(p) != 2 { return "" }
+		uuid := p[0]
+		hp := strings.SplitN(strings.TrimSuffix(strings.SplitN(p[1], "?", 2)[0], "/"), ":", 2)
+		if len(hp) != 2 { return "" }
+		host, port := hp[0], hp[1]
+		sni := host
+		net := "tcp"
+		fp := ""
+		skip := false
+		if strings.Contains(p[1], "?") {
+			q, _ := url.ParseQuery(strings.SplitN(p[1], "?", 2)[1])
+			if q.Get("sni") != "" { sni = q.Get("sni") }
+			if q.Get("type") != "" { net = q.Get("type") }
+			if q.Get("fp") != "" { fp = q.Get("fp") }
+			if q.Get("insecure") == "1" { skip = true }
+		}
+		r := fmt.Sprintf("  - name: \"%s\"\n    type: vless\n    server: %s\n    port: %s\n    uuid: %s\n    network: %s\n    tls: true\n    udp: true\n    flow: xtls-rprx-vision\n    servername: %s\n", name, host, port, uuid, net, sni)
+		if fp != "" { r += fmt.Sprintf("    client-fingerprint: %s\n", fp) }
+		if skip { r += "    skip-cert-verify: true\n" }
+		return r
+	}
+
 	if strings.HasPrefix(link, "hysteria2://") || strings.HasPrefix(link, "hy2://") {
 		link = strings.TrimPrefix(link, "hysteria2://")
 		link = strings.TrimPrefix(link, "hy2://")
@@ -633,11 +699,18 @@ func parseNodeConfig(link string) string {
 		if len(hp) != 2 { return "" }
 		host, port := hp[0], hp[1]
 		sni := host
+		skip := false
+		var ports string
 		if strings.Contains(p[1], "?") {
 			q, _ := url.ParseQuery(strings.SplitN(p[1], "?", 2)[1])
 			if q.Get("sni") != "" { sni = q.Get("sni") }
+			if q.Get("insecure") == "1" { skip = true }
+			if q.Get("mport") != "" { ports = q.Get("mport") }
 		}
-		return fmt.Sprintf("  - name: \"%s\"\n    type: hysteria2\n    server: %s\n    port: %s\n    password: %s\n    sni: %s\n", name, host, port, pass, sni)
+		r := fmt.Sprintf("  - name: \"%s\"\n    type: hysteria2\n    server: %s\n    port: %s\n    password: %s\n    sni: %s\n", name, host, port, pass, sni)
+		if ports != "" { r += fmt.Sprintf("    ports: %s\n", ports) }
+		if skip { r += "    skip-cert-verify: true\n" }
+		return r
 	}
 
 	if strings.HasPrefix(link, "vmess://") {
@@ -671,25 +744,34 @@ func parseNodeConfig(link string) string {
 		if strings.Contains(link, "#") {
 			link = strings.SplitN(link, "#", 2)[0]
 		}
-		var decoded string
-		d, err := base64.StdEncoding.DecodeString(link)
-		if err != nil {
-			d, err = base64.RawStdEncoding.DecodeString(link)
-			if err != nil {
-				decoded = link
-			} else {
-				decoded = string(d)
-			}
-		} else {
-			decoded = string(d)
-		}
-		p := strings.SplitN(decoded, "@", 2)
-		if len(p) == 2 {
+		
+		if strings.Contains(link, "@") {
+			p := strings.SplitN(link, "@", 2)
+			if len(p) != 2 { return "" }
+			
 			methodPass := p[0]
-			mp := strings.SplitN(methodPass, ":", 2)
-			if len(mp) != 2 { return "" }
-			method, pass := mp[0], mp[1]
-			hp := strings.SplitN(p[1], ":", 2)
+			hostPort := p[1]
+			
+			var method, pass string
+			d, err := base64.StdEncoding.DecodeString(methodPass)
+			if err != nil {
+				d, err = base64.RawStdEncoding.DecodeString(methodPass)
+				if err != nil {
+					mp := strings.SplitN(methodPass, ":", 2)
+					if len(mp) != 2 { return "" }
+					method, pass = mp[0], mp[1]
+				} else {
+					mp := strings.SplitN(string(d), ":", 2)
+					if len(mp) != 2 { return "" }
+					method, pass = mp[0], mp[1]
+				}
+			} else {
+				mp := strings.SplitN(string(d), ":", 2)
+				if len(mp) != 2 { return "" }
+				method, pass = mp[0], mp[1]
+			}
+			
+			hp := strings.SplitN(hostPort, ":", 2)
 			if len(hp) != 2 { return "" }
 			return fmt.Sprintf("  - name: \"%s\"\n    type: ss\n    server: %s\n    port: %s\n    cipher: %s\n    password: %s\n", name, hp[0], hp[1], method, pass)
 		}

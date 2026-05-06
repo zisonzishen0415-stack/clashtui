@@ -200,10 +200,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "c":
 			m.startAction("Importing from clipboard")
 			return m, m.importFromClipboard()
-		case "r":
-			m.startAction("Restarting core")
-			return m, m.restartCore()
-		case "R":
+		case "r", "R":
 			m.startAction("Refreshing subscription")
 			return m, m.refreshSubscription()
 		case "q", "ctrl+c":
@@ -489,17 +486,20 @@ func (m Model) finishInputMode() (tea.Model, tea.Cmd) {
 			name = "Subscription"
 		}
 		if m.addType == "subscription" {
-			settings.AddSubscription(&m.settings, name, m.urlBuf)
+			url := m.urlBuf
+			settings.AddSubscription(&m.settings, name, url)
 			m.addLog("→ Added subscription: " + name)
 			m.inputMode = ""
 			m.inputBuf = ""
 			m.urlBuf = ""
-			return m, m.downloadSub(name, m.urlBuf)
+			return m, m.downloadSub(name, url)
 		} else if m.addType == "nodes" {
+			content := m.urlBuf
 			m.addLog("→ Importing nodes...")
 			m.inputMode = ""
 			m.inputBuf = ""
-			return m, m.importNodes(name, m.urlBuf)
+			m.urlBuf = ""
+			return m, m.importNodes(name, content)
 		}
 		m.inputMode = ""
 		m.inputBuf = ""
@@ -573,7 +573,7 @@ func (m Model) View() string {
 		status += "\n  " + tui.StatusErr.Render("⚠ " + m.err)
 	}
 
-	help := "\n  1/2/3 or h/l: switch tabs | x: stop core | q: quit"
+	help := "\n  1/2/3 or h/l: switch tabs | r: refresh | x: stop | q: quit"
 
 	mainUI := tabs + "\n" + content + status + tui.Help.Render(help)
 
@@ -719,13 +719,13 @@ func (m Model) switchSubscription() tea.Cmd {
 		s := settings.Load()
 		sub := settings.GetActiveSubscription(s)
 		if sub == nil || sub.URL == "" {
-			return tui.MsgLogLine("No subscription")
+			return tui.MsgLogLine("⚠ No subscription")
 		}
 
 		m.addLog("Downloading: " + sub.URL)
 		_, info, err := clash.DownloadSubscription(sub.URL, s.ProxyPort, s.APIPort)
 		if err != nil {
-			return tui.MsgLogLine("Error: " + err.Error())
+			return tui.MsgLogLine("⚠ Download error: " + err.Error())
 		}
 
 		if info.Traffic != "" || info.Expiry != "" {
@@ -736,12 +736,16 @@ func (m Model) switchSubscription() tea.Cmd {
 		}
 
 		if !m.core.IsInstalled() {
-			m.core.Install()
-			m.core.DownloadGeoData()
+			if err := m.core.Install(); err != nil {
+				return tui.MsgLogLine("⚠ Core install error: " + err.Error())
+			}
+			if err := m.core.DownloadGeoData(); err != nil {
+				return tui.MsgLogLine("⚠ GeoData error: " + err.Error())
+			}
 		}
 
-		if err := m.core.Start(); err != nil {
-			return tui.MsgLogLine("Error starting: " + err.Error())
+		if err := m.core.StartAndCheck(); err != nil {
+			return tui.MsgLogLine("⚠ Core start error: " + err.Error())
 		}
 
 		return tui.MsgRefresh{Traffic: info.Traffic, Expiry: info.Expiry}
@@ -751,7 +755,7 @@ func (m Model) switchSubscription() tea.Cmd {
 func (m Model) restartCore() tea.Cmd {
 	return func() tea.Msg {
 		if !config.Exists() {
-			return tui.MsgLogLine("⚠ No config, press c to import")
+			return tui.MsgLogLine("⚠ No config, press s to add subscription")
 		}
 
 		m.core.Stop()
@@ -761,11 +765,9 @@ func (m Model) restartCore() tea.Cmd {
 			m.core.DownloadGeoData()
 		}
 
-		if err := m.core.Start(); err != nil {
-			return tui.MsgLogLine("⚠ Start error: " + err.Error())
+		if err := m.core.StartAndCheck(); err != nil {
+			return tui.MsgLogLine("⚠ Core error: " + err.Error())
 		}
-
-		time.Sleep(500 * time.Millisecond)
 
 		return tui.MsgRefresh{}
 	}
@@ -778,29 +780,30 @@ func (m Model) refreshSubscription() tea.Cmd {
 
 		sub := settings.GetActiveSubscription(m.settings)
 		if sub == nil {
-			return tui.MsgLogLine("⚠ No subscription, press c to import")
+			return tui.MsgLogLine("⚠ No subscription")
 		}
 
 		_, info, err := clash.DownloadSubscription(sub.URL, m.settings.ProxyPort, m.settings.APIPort)
 		if err != nil {
-			m.core.Start()
 			return tui.MsgLogLine("⚠ Download error: " + err.Error())
 		}
 
 		if !m.core.IsInstalled() {
-			m.core.Install()
-			m.core.DownloadGeoData()
+			if err := m.core.Install(); err != nil {
+				return tui.MsgLogLine("⚠ Core install error: " + err.Error())
+			}
+			if err := m.core.DownloadGeoData(); err != nil {
+				return tui.MsgLogLine("⚠ GeoData error: " + err.Error())
+			}
 		}
 
-		if err := m.core.Start(); err != nil {
-			return tui.MsgLogLine("⚠ Start error: " + err.Error())
+		if err := m.core.StartAndCheck(); err != nil {
+			return tui.MsgLogLine("⚠ Core start error: " + err.Error())
 		}
 
 		if m.settings.SystemProxy {
 			proxy.SetSystemProxy(m.settings.ProxyPort)
 		}
-
-		time.Sleep(500 * time.Millisecond)
 
 		return tui.MsgRefresh{Traffic: info.Traffic, Expiry: info.Expiry}
 	}
@@ -832,23 +835,28 @@ func (m Model) downloadSub(name, url string) tea.Cmd {
 		m.addLog("Downloading: " + url)
 		_, info, err := clash.DownloadSubscription(url, m.settings.ProxyPort, m.settings.APIPort)
 		if err != nil {
-			m.addLog("Error: " + err.Error())
-			m.err = err.Error()
-			return nil
+			m.addLog("⚠ Download error: " + err.Error())
+			return tui.MsgLogLine("⚠ Download error: " + err.Error())
 		}
 
-		m.addLog("Subscription saved")
+		m.addLog("✓ Subscription saved")
 
 		if !m.core.IsInstalled() {
 			m.addLog("Installing core...")
-			m.core.Install()
-			m.core.DownloadGeoData()
+			if err := m.core.Install(); err != nil {
+				return tui.MsgLogLine("⚠ Core install error: " + err.Error())
+			}
+			if err := m.core.DownloadGeoData(); err != nil {
+				return tui.MsgLogLine("⚠ GeoData error: " + err.Error())
+			}
 		}
 
 		m.core.Stop()
-		m.core.Start()
+		if err := m.core.StartAndCheck(); err != nil {
+			return tui.MsgLogLine("⚠ Core start error: " + err.Error())
+		}
 
-		m.err = ""
+		m.addLog("✓ Core started")
 		return tui.MsgRefresh{Traffic: info.Traffic, Expiry: info.Expiry}
 	}
 }
@@ -860,8 +868,7 @@ func (m Model) importNodes(name, content string) tea.Cmd {
 		nodes := clash.ParseNodeLinks(content)
 		if len(nodes) == 0 {
 			m.addLog("⚠ No valid node links found")
-			m.err = "no valid node links"
-			return nil
+			return tui.MsgLogLine("⚠ No valid node links")
 		}
 
 		m.addLog(fmt.Sprintf("→ Found %d nodes", len(nodes)))
@@ -872,20 +879,26 @@ func (m Model) importNodes(name, content string) tea.Cmd {
 
 		configData := clash.BuildConfigFromNodes(nodes, m.settings.ProxyPort, m.settings.APIPort)
 		if err := config.SaveConfig([]byte(configData)); err != nil {
-			m.addLog("⚠ Error: " + err.Error())
-			return nil
+			m.addLog("⚠ Save error: " + err.Error())
+			return tui.MsgLogLine("⚠ Config save error: " + err.Error())
 		}
 
-		m.addLog("→ Config saved")
+		m.addLog("✓ Config saved")
 
 		if !m.core.IsInstalled() {
 			m.addLog("→ Installing core...")
-			m.core.Install()
-			m.core.DownloadGeoData()
+			if err := m.core.Install(); err != nil {
+				return tui.MsgLogLine("⚠ Core install error: " + err.Error())
+			}
+			if err := m.core.DownloadGeoData(); err != nil {
+				return tui.MsgLogLine("⚠ GeoData error: " + err.Error())
+			}
 		}
 
 		m.core.Stop()
-		m.core.Start()
+		if err := m.core.StartAndCheck(); err != nil {
+			return tui.MsgLogLine("⚠ Core start error: " + err.Error())
+		}
 
 		m.running = true
 		m.addLog("✓ Core started with imported nodes")

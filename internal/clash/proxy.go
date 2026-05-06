@@ -3,6 +3,7 @@ package clash
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -62,35 +63,33 @@ func (c *Client) GetAllProxies() ([]ProxyInfo, error) {
 }
 
 func (c *Client) GetCurrentProxy() (string, error) {
-	// Try multiple proxy group names (different subscriptions use different names)
-	groupNames := []string{"Auto", "自动选择", "GLOBAL", "Proxy", "代理"}
+	data, err := c.Get("/proxies")
+	if err != nil {
+		return "", err
+	}
 
-	for _, name := range groupNames {
-		data, err := c.Get("/proxies/" + name)
-		if err != nil {
-			continue
-		}
+	var resp ProxiesResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return "", err
+	}
 
-		var detail ProxyDetail
-		if err := json.Unmarshal(data, &detail); err != nil {
-			continue
-		}
+	groupNames := []string{"GLOBAL", "Proxy", "Auto", "代理", "自动选择"}
 
-		if detail.Now != "" {
-			// If it's another group, drill down to find actual node
-			for _, subName := range groupNames {
-				if detail.Now == subName {
-					// Recursively get the actual node
-					subData, subErr := c.Get("/proxies/" + detail.Now)
-					if subErr == nil {
-						var subDetail ProxyDetail
-						if json.Unmarshal(subData, &subDetail) == nil && subDetail.Now != "" {
+	for _, group := range groupNames {
+		if detail, ok := resp.Proxies[group]; ok {
+			if detail.Now == "DIRECT" || detail.Now == "REJECT" {
+				continue
+			}
+			if detail.Now != "" {
+				if subDetail, ok := resp.Proxies[detail.Now]; ok {
+					if subDetail.Type == "URLTest" || subDetail.Type == "Selector" {
+						if subDetail.Now != "" && subDetail.Now != "DIRECT" {
 							return subDetail.Now, nil
 						}
 					}
 				}
+				return detail.Now, nil
 			}
-			return detail.Now, nil
 		}
 	}
 
@@ -98,22 +97,36 @@ func (c *Client) GetCurrentProxy() (string, error) {
 }
 
 func (c *Client) SwitchProxy(name string) error {
-	// Try multiple proxy group names
-	groupNames := []string{"Auto", "自动选择", "GLOBAL", "Proxy", "代理"}
+	// First, ensure GLOBAL points to Proxy (not DIRECT)
+	// GLOBAL is the main entry point for traffic
+	err := c.Put("/proxies/GLOBAL", map[string]string{"name": "Proxy"})
+	if err != nil {
+		// Try setting GLOBAL directly to the node
+		c.Put("/proxies/GLOBAL", map[string]string{"name": name})
+	}
 
+	// Then switch in Proxy group (Selector type - allows manual selection)
+	err = c.Put("/proxies/Proxy", map[string]string{"name": name})
+	if err == nil {
+		return nil
+	}
+
+	// Fallback: try other selector-type groups
+	groupNames := []string{"GLOBAL", "代理"}
 	for _, group := range groupNames {
-		err := c.Put("/proxies/"+group, map[string]string{"name": name})
+		err = c.Put("/proxies/"+group, map[string]string{"name": name})
 		if err == nil {
 			return nil
 		}
 	}
 
-	return fmt.Errorf("failed to switch proxy in any group")
+	return fmt.Errorf("failed to switch proxy")
 }
 
 func (c *Client) TestDelay(name string) (int, error) {
-	url := fmt.Sprintf("/proxies/%s/delay?timeout=5000&url=http://www.gstatic.com/generate_204", name)
-	data, err := c.Get(url)
+	encodedName := url.PathEscape(name)
+	apiURL := fmt.Sprintf("/proxies/%s/delay?timeout=5000&url=http://www.gstatic.com/generate_204", encodedName)
+	data, err := c.Get(apiURL)
 	if err != nil {
 		return 0, err
 	}
@@ -129,10 +142,6 @@ func (c *Client) TestDelay(name string) (int, error) {
 }
 
 func isRealNode(name, typ string) bool {
-	if strings.Contains(name, "流量") || strings.Contains(name, "到期") ||
-		strings.Contains(name, "重置") || strings.Contains(name, "建议") {
-		return false
-	}
 	skipTypes := []string{"Selector", "URLTest", "Fallback", "Direct", "Reject", "Pass", "Compatible"}
 	for _, t := range skipTypes {
 		if strings.ToLower(typ) == strings.ToLower(t) {
