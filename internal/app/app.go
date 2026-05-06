@@ -222,7 +222,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleConfigKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	k := msg.String()
-	totalRows := len(m.settings.Subscriptions) + 1 + 1 + 4 + 1 + 2
+	totalRows := len(m.settings.Subscriptions) + 1 + 1 + 5 + 1 + 2
 
 	switch k {
 	case "j", "down":
@@ -284,7 +284,7 @@ func (m Model) handleConfigEnter() (tea.Model, tea.Cmd) {
 	settingsStart := addRow + 1
 	settingsIdx := row - settingsStart
 
-	if settingsIdx >= 0 && settingsIdx < 4 {
+	if settingsIdx >= 0 && settingsIdx < 5 {
 		switch settingsIdx {
 		case 0:
 			m.settings.AutoStart = !m.settings.AutoStart
@@ -312,24 +312,29 @@ func (m Model) handleConfigEnter() (tea.Model, tea.Cmd) {
 			if m.settings.AutoSelectBest {
 				status = "on"
 			}
-			m.addLog("✓ Auto select best: " + status)
+m.addLog("✓ Auto select best: " + status)
 			return m, nil
 		case 3:
+			if m.settings.TUNMode {
+				m.addLog("⚠ Disable TUN mode first")
+				return m, nil
+			}
 			m.settings.SystemProxy = !m.settings.SystemProxy
 			settings.Save(m.settings)
 			if m.settings.SystemProxy {
 				proxy.SetSystemProxy(m.settings.ProxyPort)
 				m.addLog("✓ System proxy: on")
-				m.addLog("Terminal: source ~/.config/clashtui/proxy.sh")
 			} else {
 				proxy.UnsetSystemProxy()
 				m.addLog("✓ System proxy: off")
 			}
 			return m, nil
+		case 4:
+			return m.handleTUNModeToggle()
 		}
 	}
 
-	portsStart := settingsStart + 4
+	portsStart := settingsStart + 5
 	portIdx := row - portsStart
 
 	if portIdx == 0 {
@@ -375,6 +380,52 @@ WantedBy=default.target`
 	os.Remove(serviceFile)
 	exec.Command("systemctl", "--user", "daemon-reload").Run()
 	return m, func() tea.Msg { return tui.MsgLogLine("Auto start disabled") }
+}
+
+func (m Model) handleTUNModeToggle() (tea.Model, tea.Cmd) {
+	if !m.settings.TUNMode {
+		if m.core.NeedsCapability() {
+			m.addLog("⚠ TUN needs sudo setcap. Run:")
+			m.addLog("  sudo setcap cap_net_admin+ep " + config.RealCoreBinaryPath())
+			return m, nil
+		}
+		
+		m.settings.TUNMode = true
+		m.settings.SystemProxy = false
+		proxy.UnsetSystemProxy()
+		settings.Save(m.settings)
+		m.addLog("✓ TUN mode: on (System proxy disabled)")
+		
+		if m.running {
+			m.core.Stop()
+			data, err := config.LoadConfig()
+			if err != nil {
+				m.addLog("⚠ Config load failed")
+				return m, nil
+			}
+			newData := clash.ProcessConfigForTUN(data, true)
+			config.SaveConfig(newData)
+			if err := m.core.StartAndCheck(); err != nil {
+				m.addLog("⚠ Core restart failed")
+				return m, nil
+			}
+			m.addLog("✓ All traffic now through proxy")
+		}
+		return m, nil
+	}
+	
+	m.settings.TUNMode = false
+	settings.Save(m.settings)
+	m.addLog("✓ TUN mode: off")
+	
+	if m.running {
+		m.core.Stop()
+		data, _ := config.LoadConfig()
+		newData := clash.ProcessConfigForTUN(data, false)
+		config.SaveConfig(newData)
+		m.core.StartAndCheck()
+	}
+	return m, nil
 }
 
 func (m Model) handleInputMode(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -667,8 +718,8 @@ func (m Model) configView() string {
 	b.WriteString("\n  Settings:\n")
 
 	settingsStart := addRow + 1
-	opts := []string{"Auto start on boot", "Auto test delay", "Auto select fastest", "System proxy"}
-	values := []bool{m.settings.AutoStart, m.settings.AutoTestDelay, m.settings.AutoSelectBest, m.settings.SystemProxy}
+	opts := []string{"Auto start on boot", "Auto test delay", "Auto select fastest", "System proxy", "TUN mode"}
+	values := []bool{m.settings.AutoStart, m.settings.AutoTestDelay, m.settings.AutoSelectBest, m.settings.SystemProxy, m.settings.TUNMode}
 
 	for i, opt := range opts {
 		row := settingsStart + i
@@ -683,7 +734,7 @@ func (m Model) configView() string {
 		b.WriteString(fmt.Sprintf("%s%s %s\n", prefix, check, opt))
 	}
 
-	portsStart := settingsStart + 4
+	portsStart := settingsStart + 5
 	b.WriteString("\n  Ports:\n")
 
 	proxyPrefix := "  "

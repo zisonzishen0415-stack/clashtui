@@ -161,7 +161,7 @@ func (c *Core) Install() error {
 }
 
 func (c *Core) NeedsCapability() bool {
-	cmd := exec.Command("getcap", config.CoreBinaryPath())
+	cmd := exec.Command("getcap", config.RealCoreBinaryPath())
 	output, _ := cmd.Output()
 	return !strings.Contains(string(output), "cap_net_admin")
 }
@@ -232,8 +232,6 @@ func (c *Core) StartAndCheck() error {
 	c.runningCmd = cmd
 	saveClashPid(cmd.Process.Pid)
 
-	time.Sleep(500 * time.Millisecond)
-
 	f.Close()
 
 	if cmd.Process == nil {
@@ -245,22 +243,25 @@ func (c *Core) StartAndCheck() error {
 	}
 
 	client := NewClient(9090)
-	if !client.IsConnected() {
-		errData, _ := os.ReadFile(stderrFile)
-		errMsg := string(errData)
-		if strings.Contains(errMsg, "fatal") || strings.Contains(errMsg, "error") {
-			lines := strings.Split(errMsg, "\n")
-			for _, line := range lines {
-				if strings.Contains(line, "fatal") || strings.Contains(line, "Parse config error") {
-					return fmt.Errorf("core startup failed: %s", strings.TrimSpace(line))
-				}
-			}
-			return fmt.Errorf("core startup failed, check %s", stderrFile)
+	for i := 0; i < 10; i++ {
+		time.Sleep(200 * time.Millisecond)
+		if client.IsConnected() {
+			return nil
 		}
-		return fmt.Errorf("core not responding at API port 9090")
 	}
 
-	return nil
+	errData, _ := os.ReadFile(stderrFile)
+	errMsg := string(errData)
+	if strings.Contains(errMsg, "fatal") || strings.Contains(errMsg, "error") {
+		lines := strings.Split(errMsg, "\n")
+		for _, line := range lines {
+			if strings.Contains(line, "fatal") || strings.Contains(line, "Parse config error") {
+				return fmt.Errorf("core startup failed: %s", strings.TrimSpace(line))
+			}
+		}
+		return fmt.Errorf("core startup failed, check %s", stderrFile)
+	}
+	return fmt.Errorf("core not responding at API port 9090")
 }
 
 func (c *Core) Stop() error {
