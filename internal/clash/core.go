@@ -331,7 +331,7 @@ func ungzip(src, dst string) error {
 	return err
 }
 
-func DownloadSubscription(subURL string, proxyPort, apiPort int) ([]byte, SubscriptionInfo, error) {
+func DownloadSubscription(subURL string, proxyPort, apiPort int, tunMode bool) ([]byte, SubscriptionInfo, error) {
 	if subURL == "" {
 		return nil, SubscriptionInfo{}, fmt.Errorf("empty subscription URL")
 	}
@@ -364,7 +364,7 @@ func DownloadSubscription(subURL string, proxyPort, apiPort int) ([]byte, Subscr
 		if len(nodes) == 0 {
 			return nil, info, fmt.Errorf("no valid nodes found in subscription")
 		}
-		configData = []byte(buildConfig(nodes, proxyPort, apiPort))
+		configData = []byte(buildConfig(nodes, proxyPort, apiPort, tunMode))
 	}
 
 	if err := config.SaveConfig(configData); err != nil { return nil, SubscriptionInfo{}, err }
@@ -606,12 +606,15 @@ func ProcessConfigForTUN(configData []byte, enableTUN bool) []byte {
 	return []byte(strings.Join(result, "\n"))
 }
 
-func buildConfig(nodes []string, proxyPort, apiPort int) string {
+func buildConfig(nodes []string, proxyPort, apiPort int, tunMode bool) string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("mixed-port: %d\nallow-lan: true\nmode: rule\nlog-level: info\nexternal-controller: 127.0.0.1:%d\n", proxyPort, apiPort))
 
-	// DNS configuration - use system DNS for reliability
 	b.WriteString("\ndns:\n  enable: false\n")
+
+	if tunMode {
+		b.WriteString("\ntun:\n  enable: true\n  stack: system\n  auto-route: true\n  auto-detect-interface: true\n  dns-hijack:\n    - any:53\n")
+	}
 
 	names := []string{}
 	realNodes := []string{}

@@ -723,7 +723,7 @@ func (m Model) switchSubscription() tea.Cmd {
 		}
 
 		m.addLog("Downloading: " + sub.URL)
-		_, info, err := clash.DownloadSubscription(sub.URL, s.ProxyPort, s.APIPort)
+		_, info, err := clash.DownloadSubscription(sub.URL, s.ProxyPort, s.APIPort, false)
 		if err != nil {
 			return tui.MsgLogLine("⚠ Download error: " + err.Error())
 		}
@@ -783,7 +783,7 @@ func (m Model) refreshSubscription() tea.Cmd {
 			return tui.MsgLogLine("⚠ No subscription")
 		}
 
-		_, info, err := clash.DownloadSubscription(sub.URL, m.settings.ProxyPort, m.settings.APIPort)
+		_, info, err := clash.DownloadSubscription(sub.URL, m.settings.ProxyPort, m.settings.APIPort, m.settings.TUNMode)
 		if err != nil {
 			return tui.MsgLogLine("⚠ Download error: " + err.Error())
 		}
@@ -833,7 +833,7 @@ func (m Model) importFromClipboard() tea.Cmd {
 func (m Model) downloadSub(name, url string) tea.Cmd {
 	return func() tea.Msg {
 		m.addLog("Downloading: " + url)
-		_, info, err := clash.DownloadSubscription(url, m.settings.ProxyPort, m.settings.APIPort)
+		_, info, err := clash.DownloadSubscription(url, m.settings.ProxyPort, m.settings.APIPort, m.settings.TUNMode)
 		if err != nil {
 			m.addLog("⚠ Download error: " + err.Error())
 			return tui.MsgLogLine("⚠ Download error: " + err.Error())
@@ -877,7 +877,7 @@ func (m Model) importNodes(name, content string) tea.Cmd {
 		m.settings.Subscriptions[len(m.settings.Subscriptions)-1].Traffic = fmt.Sprintf("%d nodes", len(nodes))
 		settings.Save(m.settings)
 
-		configData := clash.BuildConfigFromNodes(nodes, m.settings.ProxyPort, m.settings.APIPort)
+		configData := clash.BuildConfigFromNodes(nodes, m.settings.ProxyPort, m.settings.APIPort, m.settings.TUNMode)
 		if err := config.SaveConfig([]byte(configData)); err != nil {
 			m.addLog("⚠ Save error: " + err.Error())
 			return tui.MsgLogLine("⚠ Config save error: " + err.Error())
