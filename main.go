@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
 	"time"
@@ -138,28 +139,14 @@ func runDaemon() {
 }
 
 func runTUI() {
-	acquired, err := singleinstance.Acquire()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
-		fmt.Fprintln(os.Stderr, "  Suggestion: Remove /tmp/clashtui.pid and try again")
-		os.Exit(1)
+	if singleinstance.IsRunning() {
+		fmt.Println("Daemon already running, connecting...")
+	} else {
+		fmt.Println("Daemon not running, starting...")
+		cmd := exec.Command(os.Args[0], "--daemon")
+		cmd.Start()
+		time.Sleep(2 * time.Second)
 	}
-	if !acquired {
-		os.Exit(0)
-	}
-
-	defer singleinstance.Release()
-
-	client := clash.NewClient(getAPIPort())
-	core := clash.NewCore()
-
-	if !client.IsConnected() {
-		core.Stop()
-	}
-
-	go singleinstance.HandleSocketCommands(func(cmd string) string {
-		return handleCommand(cmd, core)
-	})
 
 	p := tea.NewProgram(
 		app.New(),
@@ -171,7 +158,7 @@ func runTUI() {
 		os.Exit(1)
 	}
 
-	client = clash.NewClient(getAPIPort())
+	client := clash.NewClient(getAPIPort())
 	if client.IsConnected() {
 		fmt.Println("\n  ✓ Exited - core running")
 		fmt.Println("  Run 'clashtui --env' to see proxy env vars")
